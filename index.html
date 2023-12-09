@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Document</title>
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+		#main {
+			height: 100svh;
+			width: 100%;
+			padding-inline: 0.5rem;
+		}
+
+		#main,
+		#controls {
+			display: flex;
+			flex-direction: column;
+			/* max-width: 100%; */
+		}
+
+		#controls {
+			width: fit-content;
+			gap: 0.5rem;
+			padding-block: 0.5rem;
+		}
+
+		audio,
+		canvas {
+			width: 100%;
+		}
+
+		#audiowrapper {
+			padding-block: 0.5rem;
+		}
+
+		#container {
+			border: 1px solid gray;
+		}
+
+		#container {
+			flex-grow: 1;
+			overflow: hidden;
+			/* padding: 0.5rem; */
+		}
+
+		input[type="file"] {
+			display: none;
+		}
+
+		button {
+			padding: 0.5rem;
+			border-radius: 999px;
+		}
+
+		#stats *,
+		#controls {
+			font-family: monospace;
+			font-size: 0.75rem;
+		}
+
+		#stats {
+			width: 100%;
+		}
+
+		table {
+			border-collapse: separate;
+			border-spacing: 0;
+			border-top: 1px solid gray;
+		}
+
+		tr td:first-child {
+			border-inline: 1px solid gray;
+		}
+		tr td:last-child {
+			border-right: 1px solid gray;
+		}
+		td {
+			padding-inline: 3px;
+			padding-block: 1px;
+			border-bottom: 1px solid gray;
+		}
+		td select {
+			width: 100%;
+			border: 0;
+		}
+
+		td:has(select) {
+			padding: 0;
+		}
+
+		#stats tr {
+			width: 100%;
+		}
+
+		#stats .key {
+			display: block;
+			min-width: max-content;
+		}
+
+		td {
+			max-width: 50vw;
+			overflow: hidden;
+			word-break: keep-all;
+			white-space: nowrap;
+			text-overflow: ellipsis;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="main">
+		<div id="controls">
+			<button onclick="audioSrc.v = audioName.v = streamLink">Use music stream</button>
+			<button onclick="doc.fileinput.click()">Use my own audio file</button>
+			<table>
+				<thead></thead>
+				<tbody id="stats">
+				</tbody>
+			</table>
+			<input type="file" name="" id="fileinput">
+		</div>
+		<div id="container">
+			<canvas id="canvas"></canvas>
+		</div>
+		<div id="audiowrapper">
+			<audio id="audioel" controls crossorigin="anonymous"></audio>
+		</div>
+	</div>
+	<script>
+		const _dummy = document.createElement("div")
+		const doc = new Proxy({}, { get(t, p, r) { return document.getElementById(p) } });
+
+		const { container, canvas, audioel, fileinput, stats } = doc;
+
+		class Signal {
+			constructor(v) { this._v = v; this.subs = new Set() }
+			set v(v) { this._v = v; this.subs.forEach((sub) => sub(v)); }
+			get v() { return this._v; }
+			sub(cb, getInit = true) { this.subs.add(cb); getInit && cb(this._v); return this; }
+		}
+
+		function sig(initial) { return new Signal(initial) }
+		function derived(cb, deps) { let ret = new Signal(cb(deps)); deps.forEach(dep => dep.sub(() => ret.v = cb(deps))); return ret; }
+
+		function createStat(text, initial, fmt = (v) => v) {
+			_dummy.innerHTML = `<table><tbody><tr><td class='${initial === undefined ? "" : "key"}' ${initial === undefined ? 'colspan="100"' : ""}>${text}</td>${initial !== undefined ? "<td class='val'></td>" : ""}</tr></tbody></table>`;
+			let el = _dummy.children[0].children[0].children[0].cloneNode(true);
+			let ret;
+			if (initial !== undefined) {
+				ret = (initial instanceof Signal ? initial : sig(initial)).sub((v) => {
+					el.lastElementChild.innerText = `${fmt(v)}`
+				})
+			}
+			stats.appendChild(el);
+			return [ret, el];
+		}
+
+		function createDynamicStat(text, initial, fmt = (v) => {}) {
+			_dummy.innerHTML = `<table><tbody><tr><td class='key'>${text}</td><td class='val'>${initial}</td></tr></tbody></table>`;
+			let el = _dummy.children[0].children[0].children[0].cloneNode(true);
+			stats.appendChild(el);
+			fmt(stats.lastElementChild);
+			return el;
+		}
+
+		const streamLink = "https://icecast2.ufpel.edu.br/live";	
+
+		const audioSrc = sig("").sub((v) => { audioel.src = v; });
+		const [audioName] = createStat("Audio Source", "", (v) => v === "" ? "No Source Chosen Yet" : v);
+
+		fileinput.addEventListener("input", (e) => {
+			audioSrc.v = URL.createObjectURL(e.target.files[0]);
+			audioName.v = e.target.value;
+		})
+
+		let dims = sig({ w: 0, h: 0 })
+		new ResizeObserver(() => {
+			dims.v = {
+				w: container.offsetWidth,
+				h: container.offsetHeight
+			};
+		}).observe(container);
+
+		/*
+		* Reworked example from MDN:
+		* https://developer.mozilla.org/en-US/docs/Web/API/AnalyserNode/getByteFrequencyData
+		*/
+
+		// change to true to use getFloatFrequencyData instead
+		const float = sig(false);
+		const maxDec = -25;
+		const minDec = -80;
+		const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+		// Web Audio API policy...
+		const unlockContext = () => {
+			if (audioCtx.state == "suspended")
+				audioCtx.resume();
+			window.removeEventListener("click", unlockContext);
+		}
+		window.addEventListener("click", unlockContext);
+
+		const audioSourceNode = audioCtx.createMediaElementSource(audioel);
+		const analyserNode = audioCtx.createAnalyser();
+
+		const fftSize = sig(1 << 13);
+		createDynamicStat(
+			"FFT Size",
+			`<select>
+				${
+					[...Array(11).keys()].map(key => 1 << (key + 5)).map(v => {
+						return `<option value="${v}" ${v === fftSize.v ? "selected" : ""}>${v}</option>`
+					}).join("")
+				}
+			</select>`,
+			(el) => {
+				let select = el.querySelector("select");
+				select.addEventListener("change", e => { fftSize.v = e.target.value; })
+			}
+		);
+
+		fftSize.sub((v) => analyserNode.fftSize = v);
+		const bufferLength = derived(() => analyserNode.frequencyBinCount, [fftSize]);
+		analyserNode.maxDecibels = maxDec;
+		analyserNode.minDecibels = minDec;
+		analyserNode.smoothingTimeConstant = 0.9;
+		audioSourceNode.connect(analyserNode);
+		analyserNode.connect(audioCtx.destination);
+
+
+		const method = derived(() => `get${float.v ? "Float" : "Byte"}FrequencyData`, [float]);
+		const dataArray = derived(() => float.v ? new Float32Array(bufferLength.v) : new Uint8Array(bufferLength.v), [float, bufferLength]);
+		const getFrequencyData = () => { analyserNode[method.v](dataArray.v); }
+		const clampBetweenZeroAndOne = (v) => (float.v ? (Math.max(minDec, v) - minDec) / (maxDec - minDec) : v / 255);
+
+		const ctx = canvas.getContext("2d");
+
+		const methodUsed = createDynamicStat(
+			"Method used",
+			`<select>
+				${[0,1].map(b => `<option value="${!!b}" ${!!b === float.v ? "selected": "" }>${`get${b ? "Float" : "Byte"}FrequencyData`}</option>`).join("")}
+			</select>`,
+			(el) => {
+				let select = el.querySelector("select");
+				select.addEventListener("change", e => { float.v = JSON.parse(e.target.value); })
+			}
+		);
+		const [methodtime] = createStat("Method time", 0, (v) => `${v.toFixed(2)}ms`);
+		const [maxGetFrames] = createStat("Max audio frames/s", 0, (v) => `${(v === Infinity ? 10000 : v).toFixed(2)}`);
+		const [uniqueDataFrames] = createStat("Unique data frames", 0);
+		const [duplicateDataFrames] = createStat("Dup. data frames", 0);
+		createStat("* should be way lower than value above it");
+		const [fps] = createStat("Canvas FPS", 0);
+		const [uniqueAudfps] = createStat("Uniq. aud. frames/s", 0, (v) => `${v}${v == 0 ? " (audio paused?)" : ""}`);
+		createStat("* should be close to canvas fps");
+
+		let fpsCounter = 0;
+		let audFpsCounter = 0;
+		const resetFpsTime = 500;
+		setInterval(() => {
+			fps.v = fpsCounter * (1000 / resetFpsTime);
+			uniqueAudfps.v = audFpsCounter * (1000 / resetFpsTime);
+			fpsCounter = 0;
+			audFpsCounter = 0;
+			lastTime = performance.now();
+		}, resetFpsTime)
+		let dataFrameSet = new Set();
+		function draw() {
+			requestAnimationFrame(draw);
+			fpsCounter++;
+			const dpr = devicePixelRatio;
+			const { w, h } = dims.v;
+			canvas.width = w * dpr;
+			canvas.height = h * dpr;
+			canvas.style.width = `${w}px`;
+			canvas.style.height = `${h}px`;
+
+			let s = performance.now();
+			getFrequencyData();
+			if (fpsCounter % 5 === 0) {
+				methodtime.v = performance.now() - s;
+				maxGetFrames.v = 1000 / methodtime.v;
+			}
+
+			let dataString = JSON.stringify([...dataArray.v]);
+			const data = [...dataArray.v].map(v => clampBetweenZeroAndOne(v));
+			if (data.reduce((p, c) => p + c, 0) !== 0) {
+				if (dataFrameSet.has(dataString)) {
+					duplicateDataFrames.v++;
+				}
+				else {
+					uniqueDataFrames.v++;
+					audFpsCounter++;
+				}
+				dataFrameSet.add(dataString);
+			}
+
+			ctx.resetTransform();
+			ctx.scale(dpr, dpr);
+			ctx.clearRect(0, 0, w, h);
+
+			const barWidth = w / bufferLength.v;
+			const nBars = bufferLength.v;
+			for (let i = 0; i < nBars; i++) {
+				ctx.fillStyle = `hsl(${(360 * i / nBars).toFixed()}, 100%, 50%)`;
+				const barHeight = h * data[i];
+				ctx.fillRect(barWidth * i, h - barHeight, Math.max(barWidth, 1), barHeight);
+			}
+		}
+		draw();
+	</script>
+</body>
+
+</html>
