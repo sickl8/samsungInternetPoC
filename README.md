@@ -1,5 +1,5 @@
 # SamsungInternetPoC
-WebAudio API AnalyserNode duplicate data
+[WebAudio API AnalyserNode duplicate data](https://forum.developer.samsung.com/t/webaudioapi-analysernode-getbytefrequencydata-returns-duplicate-frames/28406)
 
 Hello,
 Calling `AnalyserNode.getFloatFrequencyData` or `AnalyserNode.getByteFrequencyData` in a loop using `requestAnimationFrame` results in a lot of duplicate data or "frames", since I'm using it to create a visualization of an audio file's frequencies.
